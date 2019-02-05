@@ -63,7 +63,7 @@ IP=${CIDR%%/24}
 mkdir -p /vagrant/logs
 mkdir -p /etc/.consul.d
 mkdir -p /etc/tls
-
+sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no vagrant@10.10.66.11:"/etc/vault.d/vault.crt" /etc/tls/
 cat << EOF > /etc/.consul.d/tls.json
 
 {
@@ -102,7 +102,7 @@ fi
 
 if [[ "${var2}" =~ "consul-server" ]]; then
     killall consul
-    CERTS=`curl -k --header "X-Vault-Token: \`cat /vagrant/keys.txt | grep "Initial Root Token:" | cut -c21-\`"        --request POST        --data '{"common_name": "'server.${DCNAME}.${DOMAIN}'", "alt_names": "localhost", "ip_sans": "127.0.0.1", "ttl": "24h"}'       https://10.10.66.11:8200/v1/pki_int/issue/example-dot-com`
+    CERTS=`curl --cacert /etc/tls/vault.crt --header "X-Vault-Token: \`cat /vagrant/keys.txt | grep "Initial Root Token:" | cut -c21-\`"        --request POST        --data '{"common_name": "'server.${DCNAME}.${DOMAIN}'", "alt_names": "localhost", "ip_sans": "127.0.0.1", "ttl": "24h"}'       https://10.10.66.11:8200/v1/pki_int/issue/example-dot-com`
     if [ $? -ne 0 ];then
     $echo 'There is no certificates received'
     exit 1
@@ -118,7 +118,7 @@ if [[ "${var2}" =~ "consul-server" ]]; then
 else
     if [[ "${var2}" =~ "client" ]]; then
         killall consul
-        CERTS=`curl --header "X-Vault-Token: \`cat /vagrant/keys.txt | grep "Initial Root Token:" | cut -c21-\`"        --request POST        --data '{"common_name": "'client.${DCNAME}.${DOMAIN}'", "alt_names": "localhost", "ip_sans": "127.0.0.1", "ttl": "24h"}'       https://10.10.66.11:8200/v1/pki_int/issue/example-dot-com`
+        CERTS=`curl --cacert /etc/tls/vault.crt --header "X-Vault-Token: \`cat /vagrant/keys.txt | grep "Initial Root Token:" | cut -c21-\`"        --request POST        --data '{"common_name": "'client.${DCNAME}.${DOMAIN}'", "alt_names": "localhost", "ip_sans": "127.0.0.1", "ttl": "24h"}'       https://10.10.66.11:8200/v1/pki_int/issue/example-dot-com`
         if [ $? -ne 0 ];then
         $echo 'There is no certificates received'
         exit 1
@@ -136,7 +136,7 @@ sleep 5
 consul members -ca-file=/etc/tls/consul-agent-ca.pem -client-cert=/etc/tls/consul-agent.pem -client-key=/etc/tls/consul-agent-key.pem -http-addr="https://127.0.0.1:8501"
 
 if [[ "${var2}" == "consul-server3" ]]; then
-    CALL=`curl --header "X-Vault-Token: \`cat /vagrant/keys.txt | grep "Initial Root Token:" | cut -c21-\`" --request PUT http://10.10.66.11:8200/v1/sys/seal`
+    CALL=`curl --cacert /etc/tls/vault.crt --header "X-Vault-Token: \`cat /vagrant/keys.txt | grep "Initial Root Token:" | cut -c21-\`" --request PUT https://10.10.66.11:8200/v1/sys/seal`
     echo $CALL
 fi
 set +x

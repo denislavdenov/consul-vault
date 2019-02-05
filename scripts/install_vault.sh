@@ -48,6 +48,7 @@ sudo killall vault &>/dev/null
 sudo killall vault &>/dev/null
 sudo killall vault &>/dev/null
 
+sleep 5
 # Copy vault configuration inside /etc/vault.d
 
 [ -f /vagrant/etc/vault.d/config.hcl ] && sudo mkdir -p /etc/vault.d; sudo cp /vagrant/etc/vault.d/* /etc/vault.d/
@@ -93,13 +94,14 @@ grep VAULT_ADDR ~/.bash_profile || {
   echo export VAULT_ADDR=https://127.0.0.1:8200 | sudo tee -a ~/.bash_profile
 }
 
+source ~/.bash_profile
 #start vault
 sudo /usr/local/bin/vault server -config=/etc/vault.d/config.hcl  &> ${LOG} &
 echo vault started
 sleep 3 
 
 
-source ~/.bash_profile
+
 
 vault operator init > /vagrant/keys.txt
 vault operator unseal $(cat /vagrant/keys.txt | grep "Unseal Key 1:" | cut -c15-)
