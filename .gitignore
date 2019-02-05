@@ -2,3 +2,4 @@ logs/
 pkg/
 .vagrant/
 .vault-token
+keys.txt
