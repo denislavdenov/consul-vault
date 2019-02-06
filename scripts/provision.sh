@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
-#nameserver 127.0.0.53
+sudo systemctl stop consul
+sleep 5
+sudo systemctl status consul
 #search consul
 DCNAME=${DCNAME}
 DOMAIN=${DOMAIN}
-
-set -x
 
 which unzip curl socat jq route dig vim sshpass || {
 apt-get update -y
@@ -48,6 +48,30 @@ sudo mv consul /usr/local/bin/consul
 
 }
 
+mkdir -p /vagrant/logs
+mkdir -p /etc/consul.d
+mkdir -p /etc/tls
+sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no vagrant@10.10.66.11:"/etc/vault.d/vault.crt" /etc/tls/
+
+# Unsealing vault
+
+curl \
+    --request PUT \
+    --cacert /etc/tls/vault.crt \
+    --data "{ \"key\": \"`cat /vagrant/keys.txt | grep \"Unseal Key 1:\" | cut -c15-`\"}" \
+    https://10.10.66.11:8200/v1/sys/unseal
+
+curl \
+    --request PUT \
+    --cacert /etc/tls/vault.crt \
+    --data "{ \"key\": \"`cat /vagrant/keys.txt | grep \"Unseal Key 2:\" | cut -c15-`\"}" \
+    https://10.10.66.11:8200/v1/sys/unseal
+
+curl \
+    --request PUT \
+    --cacert /etc/tls/vault.crt \
+    --data "{ \"key\": \"`cat /vagrant/keys.txt | grep \"Unseal Key 3:\" | cut -c15-`\"}" \
+    https://10.10.66.11:8200/v1/sys/unseal
 
 # Starting consul
 killall consul
@@ -57,41 +81,51 @@ if [ -z "${LOG_LEVEL}" ]; then
     LOG_LEVEL="info"
 fi
 
+if [ -d /vagrant ]; then
+  mkdir /vagrant/logs
+  LOG="/vagrant/logs/${var2}.log"
+else
+  LOG="vault.log"
+fi
+
 IFACE=`route -n | awk '$1 ~ "10.10" {print $8}'`
 CIDR=`ip addr show ${IFACE} | awk '$2 ~ "10.10" {print $2}'`
 IP=${CIDR%%/24}
-mkdir -p /vagrant/logs
-mkdir -p /etc/.consul.d
-mkdir -p /etc/tls
-sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no vagrant@10.10.66.11:"/etc/vault.d/vault.crt" /etc/tls/
-cat << EOF > /etc/.consul.d/tls.json
 
-{
-    "verify_incoming_rpc": true,
-    "verify_incoming_https": false,
-    "verify_outgoing": true,
-    "verify_server_hostname": true,
-    "domain": "${DOMAIN}",
-    "datacenter": "${DCNAME}",
-    "ca_file": "/etc/tls/consul-agent-ca.pem",
-    "cert_file": "/etc/tls/consul-agent.pem",
-    "key_file": "/etc/tls/consul-agent-key.pem",
-    "ports": {
-        "http": -1,
-        "https": 8501
-    },
-  
-    "ui": true,
-    "client_addr": "0.0.0.0",
-    "disable_remote_exec": true
-}
+sudo useradd --system --home /etc/consul.d --shell /bin/false consul
+sudo chown --recursive consul:consul /etc/consul.d
+sudo chmod -R 755 /etc/consul.d/
+sudo mkdir --parents /tmp/consul
+sudo chown --recursive consul:consul /tmp/consul
+mkdir -p /tmp/consul_logs/
+sudo chown --recursive consul:consul /tmp/consul_logs/
+
+cat << EOF > /etc/systemd/system/consul.service
+[Unit]
+Description="HashiCorp Consul - A service mesh solution"
+Documentation=https://www.consul.io/
+Requires=network-online.target
+After=network-online.target
+
+[Service]
+User=consul
+Group=consul
+ExecStart=/usr/local/bin/consul agent -config-dir=/etc/consul.d/
+ExecReload=/usr/local/bin/consul reload
+KillMode=process
+Restart=on-failure
+LimitNOFILE=65536
+
+
+[Install]
+WantedBy=multi-user.target
 
 EOF
 
 
 if [[ "${var2}" == "consul-server1" ]]; then
     encr=`consul keygen`
-    cat << EOF > /etc/.consul.d/encrypt.json
+    cat << EOF > /etc/consul.d/encrypt.json
 
     {
         "encrypt": "${encr}"
@@ -112,8 +146,47 @@ if [[ "${var2}" =~ "consul-server" ]]; then
     echo $CERTS | jq -r .data.private_key > /etc/tls/consul-agent-key.pem
     SERVER_COUNT=${SERVER_COUNT}
     echo $SERVER_COUNT
-    sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no vagrant@10.10.56.11:"/etc/.consul.d/encrypt.json" /etc/.consul.d/
-    consul agent -server -ui -config-dir=/etc/.consul.d/ -bind ${IP} -client 0.0.0.0 -data-dir=/tmp/consul -log-level=${LOG_LEVEL} -enable-script-checks -bootstrap-expect=$SERVER_COUNT -node=$var2 -retry-join=10.10.56.11 -retry-join=10.10.56.12 > /vagrant/logs/$var2.log &
+
+    cat << EOF > /etc/consul.d/tls.json
+
+    {
+        "server": true,
+        "node_name": "${var2}",
+        "bind_addr": "${IP}",
+        "client_addr": "0.0.0.0",
+        "bootstrap_expect": ${SERVER_COUNT},
+        "retry_join": ["10.10.56.11", "10.10.56.12"],
+        "log_level": "${LOG_LEVEL}",
+        "data_dir": "/tmp/consul",
+        "enable_script_checks": true,
+        "verify_incoming_rpc": true,
+        "verify_incoming_https": false,
+        "verify_outgoing": true,
+        "verify_server_hostname": true,
+        "domain": "${DOMAIN}",
+        "datacenter": "${DCNAME}",
+        "ca_file": "/etc/tls/consul-agent-ca.pem",
+        "cert_file": "/etc/tls/consul-agent.pem",
+        "key_file": "/etc/tls/consul-agent-key.pem",
+        "ports": {
+            "http": -1,
+            "https": 8501
+        },
+    
+        "ui": true,
+        "client_addr": "0.0.0.0",
+        "disable_remote_exec": true
+    }
+
+EOF
+
+    sudo sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no vagrant@10.10.56.11:"/etc/consul.d/encrypt.json" /etc/consul.d/
+    sleep 1
+    sudo systemctl enable consul
+    sudo systemctl start consul
+    journalctl -f -u consul.service > /vagrant/logs/${var2}.log &
+    sleep 5
+    sudo systemctl status consul
 
 else
     if [[ "${var2}" =~ "client" ]]; then
@@ -126,8 +199,48 @@ else
         echo $CERTS | jq -r .data.issuing_ca > /etc/tls/consul-agent-ca.pem
         echo $CERTS | jq -r .data.certificate > /etc/tls/consul-agent.pem
         echo $CERTS | jq -r .data.private_key > /etc/tls/consul-agent-key.pem
-        sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no vagrant@10.10.56.11:"/etc/.consul.d/encrypt.json" /etc/.consul.d/
-        consul agent -ui -config-dir=/etc/.consul.d -bind ${IP} -client 0.0.0.0 -data-dir=/tmp/consul -log-level=${LOG_LEVEL} -enable-script-checks -node=$var2 -retry-join=10.10.56.11 -retry-join=10.10.56.12 > /vagrant/logs/$var2.log &
+
+        cat << EOF > /etc/consul.d/tls.json
+
+        {
+            "node_name": "${var2}",
+            "bind_addr": "${IP}",
+            "client_addr": "0.0.0.0",
+            "retry_join": ["10.10.56.11", "10.10.56.12"],
+            "log_level": "${LOG_LEVEL}",
+            "data_dir": "/tmp/consul",
+            "enable_script_checks": true,
+            "verify_incoming_rpc": true,
+            "verify_incoming_https": false,
+            "verify_outgoing": true,
+            "verify_server_hostname": true,
+            "domain": "${DOMAIN}",
+            "datacenter": "${DCNAME}",
+            "ca_file": "/etc/tls/consul-agent-ca.pem",
+            "cert_file": "/etc/tls/consul-agent.pem",
+            "key_file": "/etc/tls/consul-agent-key.pem",
+            "ports": {
+                "http": -1,
+                "https": 8501
+            },
+        
+            "ui": true,
+            "client_addr": "0.0.0.0",
+            "disable_remote_exec": true
+        }
+
+EOF
+
+
+
+        sudo sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no vagrant@10.10.56.11:"/etc/consul.d/encrypt.json" /etc/consul.d/
+        sleep 1
+
+        sudo systemctl enable consul
+        sudo systemctl start consul
+        journalctl -f -u consul.service > /vagrant/logs/${var2}.log &
+        sleep 5
+        sudo systemctl status consul
     fi
 fi
 
@@ -135,8 +248,5 @@ fi
 sleep 5
 consul members -ca-file=/etc/tls/consul-agent-ca.pem -client-cert=/etc/tls/consul-agent.pem -client-key=/etc/tls/consul-agent-key.pem -http-addr="https://127.0.0.1:8501"
 
-if [[ "${var2}" == "consul-server3" ]]; then
-    CALL=`curl --cacert /etc/tls/vault.crt --header "X-Vault-Token: \`cat /vagrant/keys.txt | grep "Initial Root Token:" | cut -c21-\`" --request PUT https://10.10.66.11:8200/v1/sys/seal`
-    echo $CALL
-fi
-set +x
+
+curl --cacert /etc/tls/vault.crt --header "X-Vault-Token: `cat /vagrant/keys.txt | grep \"Initial Root Token:\" | cut -c21-`" --request PUT https://10.10.66.11:8200/v1/sys/seal
