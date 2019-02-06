@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
+
+# Stop vault if running previously
+sudo systemctl stop vault
+sleep 5
+sudo systemctl status vault
+
+
 VAULT=${VAULT}
 DCNAME=${DCNAME}
 DOMAIN=${DOMAIN}
 
 echo $DCNAME
 echo $DOMAIN
-
+rm -fr /tmp/vault/data
 which unzip curl jq /sbin/route vim sshpass || {
 apt-get update -y
 apt-get install unzip jq net-tools vim curl sshpass -y 
 }
-
-set -x
 
 mkdir -p /vagrant/pkg/
 # insall vault
@@ -36,22 +41,60 @@ which vault || {
 # IP=${CIDR%%/24}
 hostname=$(hostname)
 
-if [ -d /vagrant ]; then
-  mkdir /vagrant/logs
-  LOG="/vagrant/logs/${hostname}.log"
-else
-  LOG="vault.log"
-fi
-
 #lets kill past instance
 sudo killall vault &>/dev/null
 sudo killall vault &>/dev/null
 sudo killall vault &>/dev/null
 
-sleep 5
+sleep 10
+
+# Create vault user
+sudo useradd --system --home /etc/vault.d --shell /bin/false vault
+
+# Create vault service
+
+cat << EOF > /etc/systemd/system/vault.service
+
+[Unit]
+Description="HashiCorp Vault - A tool for managing secrets"
+Documentation=https://www.vaultproject.io/docs/
+Requires=network-online.target
+After=network-online.target
+ConditionFileNotEmpty=/etc/vault.d/config.hcl
+
+[Service]
+User=vault
+Group=vault
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+SecureBits=keep-caps
+AmbientCapabilities=CAP_IPC_LOCK
+Capabilities=CAP_IPC_LOCK+ep
+CapabilityBoundingSet=CAP_SYSLOG CAP_IPC_LOCK
+NoNewPrivileges=yes
+ExecStart=/usr/local/bin/vault server -config=/etc/vault.d/config.hcl
+ExecReload=/bin/kill --signal HUP $MAINPID
+KillMode=process
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Install]
+WantedBy=multi-user.target
+
+EOF
+
 # Copy vault configuration inside /etc/vault.d
 
 [ -f /vagrant/etc/vault.d/config.hcl ] && sudo mkdir -p /etc/vault.d; sudo cp /vagrant/etc/vault.d/* /etc/vault.d/
+# Change configuration file
+sudo chown --recursive vault:vault /etc/vault.d
+sudo chmod 640 /etc/vault.d/config.hcl
 
 ############################################
 cat << EOF > /usr/lib/ssl/req.conf
@@ -81,7 +124,7 @@ EOF
 pushd /etc/vault.d
 
 
-openssl req -x509 -batch -nodes -newkey rsa:2048 -keyout vault.key -out vault.crt -config /usr/lib/ssl/req.conf -days 9999
+openssl req -x509 -batch -nodes -newkey rsa:2048 -keyout vault.key -out vault.crt -config /usr/lib/ssl/req.conf -days 9999 &>/dev/null
 cat vault.crt >> /usr/lib/ssl/certs/ca-certificates.crt
 
 popd
@@ -96,7 +139,10 @@ grep VAULT_ADDR ~/.bash_profile || {
 
 source ~/.bash_profile
 #start vault
-sudo /usr/local/bin/vault server -config=/etc/vault.d/config.hcl  &> ${LOG} &
+sudo systemctl enable vault
+sudo systemctl start vault
+journalctl -f -u vault.service > /vagrant/logs/${hostname}.log &
+sudo systemctl status vault
 echo vault started
 sleep 3 
 
@@ -125,5 +171,4 @@ sudo VAULT_ADDR="https://127.0.0.1:8200" vault write -format=json pki_int/interm
 sudo VAULT_ADDR="https://127.0.0.1:8200" vault write -format=json pki/root/sign-intermediate csr=@pki_intermediate.csr format=pem_bundle | jq -r '.data.certificate' > intermediate.cert.pem
 sudo VAULT_ADDR="https://127.0.0.1:8200" vault write pki_int/intermediate/set-signed certificate=@intermediate.cert.pem
 sudo VAULT_ADDR="https://127.0.0.1:8200" vault write pki_int/roles/example-dot-com allowed_domains="${DCNAME}.${DOMAIN}" alt_names="localhost" ip_sans="127.0.0.1" allow_subdomains=true max_ttl="720h"
-
-set +x
+vault operator seal
